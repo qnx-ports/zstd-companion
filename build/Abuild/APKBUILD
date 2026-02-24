@@ -1,0 +1,103 @@
+# Contributor: Leo <thinkabit.ukim@gmail.com>
+# Contributor: stef <l0ls0fo2i@ctrlc.hu>
+# Contributor: André Klitzing <aklitzing@gmail.com>
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=zstd
+pkgver=1.5.6
+pkgrel=4
+pkgdesc="Zstandard - Fast real-time compression algorithm"
+url="https://facebook.github.io/zstd/"
+arch="all"
+license="BSD-3-Clause OR GPL-2.0-or-later"
+depends="libc++"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+makedepends="meson ninja clang libc++-dev"
+subpackages="
+	$pkgname-libs
+	$pkgname-static
+	$pkgname-dev
+	$pkgname-doc
+	$pkgname-frugal
+	"
+source="zstd-$pkgver.tar.gz::https://github.com/facebook/zstd/archive/v$pkgver.tar.gz"
+# we run the tests in build() for pgo, so it's tested from there.
+# options="!check"
+
+prepare() {
+    default_prepare
+    echo "#include <stdio.h>" | cat - programs/util.h > programs/util.h.new
+    mv programs/util.h.new programs/util.h
+}
+
+build() {
+	export CFLAGS="${CFLAGS/-Os/-O3} -flto=auto -ffat-lto-objects"
+	export CXXFLAGS="${CXXFLAGS/-Os/-O3} -flto=auto -ffat-lto-objects"
+	export CPPFLAGS="${CPPFLAGS/-Os/-O3} -flto=auto -ffat-lto-objects"
+	local pgo=false
+	#if [ -z "$BOOTSTRAP" ]; then
+	#	pgo=true
+	#fi
+	# 2-stage pgo+lto build (non-bootstrap), standard meson usage.
+	# note that with clang,
+	#  llvm-profdata merge --output=output/somefilename(?) output/*.profraw
+	# is needed.
+	# believe it or not, this is +30% faster on x86_64 than the default makefile build (same params)..
+	# maybe needs more testing
+	# shellcheck disable=2046
+
+	_extra_flags=""
+	if [[ $CBUILD = $CHOST ]]; then
+        # Compile natively
+        _extra_flags=""
+    else
+        # Cross compiling
+    	BUILD_ROOT=$CBUILDROOT $CBUILDROOT/system/bin/gen-meson-cross
+        _extra_flags="--cross-file=meson.cross"
+    fi
+        CC="gcc" \
+	CXX="clang++" \
+	meson setup \
+        -Dprefix=/usr \
+		$_extra_flags \
+		--default-library=both \
+		-Db_ndebug=true \
+		$($pgo && echo -Db_pgo=generate) \
+		-Dbin_contrib=false \
+		-Dbin_programs=true \
+		-Dbin_tests=false \
+		-Dbacktrace=disabled \
+		-Dmulti_thread=enabled \
+		-Dlz4=disabled \
+		-Dlzma=disabled \
+		-Dzlib=disabled \
+		build/meson output
+
+	ninja -C output
+
+	if $pgo; then
+		meson test -t 4 --no-rebuild --print-errorlogs -C output
+		meson configure -Dbin_tests=false -Db_pgo=use output
+		meson compile -C output
+	fi
+}
+
+check() {
+	# ran in build above, via pgo
+	return 0
+	#meson test -t 4 --no-rebuild --print-errorlogs -C output
+}
+
+package() {
+    depends="zstd-libs=$pkgver-r$pkgrel"
+	DESTDIR="$pkgdir" ninja install -C output
+}
+
+frugal() {
+	pkgdesc="$pkgdesc (frugal cli)"
+
+	amove usr/bin/zstd-frugal
+}
+
+sha512sums="
+ca12dffd86618ca008e1ecc79056c1129cb4e61668bf13a3cd5b2fa5c93bc9c92c80f64c1870c68b9c20009d9b3a834eac70db72242d5106125a1c53cccf8de8  zstd-1.5.6.tar.gz
+"
